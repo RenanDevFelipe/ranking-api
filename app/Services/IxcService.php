@@ -99,6 +99,37 @@ class IxcService
         return $this->consultar($config, 'su_oss_chamado', $payload);
     }
 
+    public function listarArquivosPorTicket(
+        IxcConfig $config,
+        int|string $idTicket,
+        array $filters = []
+    ): array {
+        $payload = [
+            'qtype' => $filters['qtype'] ?? 'su_oss_chamado_arquivos.id_oss_chamado',
+            'query' => $filters['query'] ?? $idTicket,
+            'oper' => $filters['oper'] ?? '=',
+            'page' => $filters['page'] ?? '1',
+            'rp' => $filters['rp'] ?? '1000',
+            'sortname' => $filters['sortname'] ?? 'su_oss_chamado_arquivos.id',
+            'sortorder' => $filters['sortorder'] ?? 'desc',
+        ];
+
+        return $this->consultar($config, 'su_oss_chamado_arquivos', $payload);
+    }
+
+    public function buscarPrimeiroArquivoPorTicket(IxcConfig $config, int|string $idTicket): ?array
+    {
+        $result = $this->listarArquivosPorTicket($config, $idTicket);
+
+        if (!$result['success']) {
+            return null;
+        }
+
+        $registros = $this->extrairRegistros($result['data']);
+
+        return $registros[0] ?? null;
+    }
+
     public function listarOrdensServicoFinalizadasPorTecnico(
         IxcConfig $config,
         int|string $idTecnico,
@@ -164,7 +195,15 @@ class IxcService
 
         $ordens = collect($registros)
             ->map(function (array $os) use ($config) {
-                return $this->formatarOrdemServico($config, $os);
+                $ordem = $this->formatarOrdemServico($config, $os);
+                $arquivo = $this->buscarPrimeiroArquivoPorTicket($config, $os['id'] ?? null);
+
+                $ordem['arquivo_id'] = $arquivo['id'] ?? null;
+                $ordem['arquivo'] = [
+                    'id' => $arquivo['id'] ?? null,
+                ];
+
+                return $ordem;
             })
             ->values();
 
