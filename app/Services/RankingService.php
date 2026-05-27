@@ -57,7 +57,7 @@ class RankingService
         string $data
     ): array {
         $mediaN3 = AvaliacaoN3::where('id_tecnico', $idColaborador)
-            ->whereDate('data_finalizacao', $data)
+            ->whereDate('data_finalizacao_os', $data)
             ->avg('nota_os');
 
         $mediaN2 = AvaliacaoN2::where('id_tecnico_n2', $idColaborador)
