@@ -4,9 +4,12 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\AvaliacaoN3;
-use App\Traits\ApiResponseTrait;
 use App\Models\AvaliacaoN3Resposta;
 use App\Models\ChecklistItem;
+use App\Models\IxcConfig;
+use App\Services\IxcFinalizacaoAutomaticaService;
+use App\Services\IxcService;
+use App\Traits\ApiResponseTrait;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +19,11 @@ class AvaliacaoN3Controller extends Controller
 {
 
     use ApiResponseTrait;
+
+    public function __construct(
+        protected IxcService $ixcService,
+        protected IxcFinalizacaoAutomaticaService $finalizacaoAutomaticaService
+    ) {}
 
     /**
      * Display a listing of the resource.
@@ -101,6 +109,17 @@ class AvaliacaoN3Controller extends Controller
                 ],
                 'respostas.*.resposta' => ['required'],
                 'respostas.*.pontuacao' => ['required', 'numeric', 'min:0'],
+                'mensagens_finalizacao' => ['sometimes', 'array'],
+                'mensagens_finalizacao.*.id_checklist_assunto' => [
+                    'required_with:mensagens_finalizacao',
+                    'integer',
+                    'exists:checklist_assuntos,id',
+                ],
+                'mensagens_finalizacao.*.mensagem' => [
+                    'required_with:mensagens_finalizacao',
+                    'string',
+                    'max:10000',
+                ],
             ]);
 
             $avaliacao = DB::transaction(function () use ($data, $request) {
@@ -131,6 +150,7 @@ class AvaliacaoN3Controller extends Controller
                     'avaliador' => $request->user()->id_user,
 
                     'check_list' => $data['respostas'],
+                    'mensagens_finalizacao' => $data['mensagens_finalizacao'] ?? [],
                 ]);
 
                 foreach ($data['respostas'] as $resposta) {
@@ -144,6 +164,16 @@ class AvaliacaoN3Controller extends Controller
 
                 return $avaliacao;
             });
+
+            $finalizacoesAutomaticas = $this->processarFinalizacoesAutomaticas(
+                $data['id_os'],
+                $data['id_checklist'],
+                $data['id_assunto_ixc'],
+                $request->user()->id_ixc_user,
+                $data['respostas'],
+                $data['mensagens_finalizacao'] ?? []
+            );
+            $avaliacao->setAttribute('finalizacoes_automaticas', $finalizacoesAutomaticas);
 
             return $this->successResponse(
                 $avaliacao->load([
@@ -225,6 +255,17 @@ class AvaliacaoN3Controller extends Controller
                 'respostas.*.id_item' => ['required_with:respostas', 'integer', 'exists:checklist_itens,id_item'],
                 'respostas.*.resposta' => ['required_with:respostas'],
                 'respostas.*.pontuacao' => ['required_with:respostas', 'numeric', 'min:0'],
+                'mensagens_finalizacao' => ['sometimes', 'array'],
+                'mensagens_finalizacao.*.id_checklist_assunto' => [
+                    'required_with:mensagens_finalizacao',
+                    'integer',
+                    'exists:checklist_assuntos,id',
+                ],
+                'mensagens_finalizacao.*.mensagem' => [
+                    'required_with:mensagens_finalizacao',
+                    'string',
+                    'max:10000',
+                ],
             ]);
 
             $avaliacao = DB::transaction(function () use ($avaliacao, $data) {
@@ -297,7 +338,7 @@ class AvaliacaoN3Controller extends Controller
     public function destroy(string $id)
     {
         try {
-            $avaliacao = AvaliacaoN3::findOrFail($id);
+            $avaliacao = AvaliacaoN3::with('usuarioAvaliador')->findOrFail($id);
             $avaliacao->delete();
 
             return $this->successResponse(null, 'Avaliação N3 removida com sucesso.');
@@ -344,6 +385,97 @@ class AvaliacaoN3Controller extends Controller
             ]);
 
             return $this->errorResponse('Erro ao verificar O.S avaliada.', 500);
+        }
+    }
+
+    public function reprocessarFinalizacoesAutomaticas(string $id)
+    {
+        try {
+            $avaliacao = AvaliacaoN3::findOrFail($id);
+
+            return $this->successResponse(
+                $this->processarFinalizacoesAutomaticas(
+                    $avaliacao->id_os,
+                    $avaliacao->id_checklist,
+                    $avaliacao->id_assunto_ixc,
+                    $avaliacao->usuarioAvaliador?->id_ixc_user,
+                    $avaliacao->check_list ?? [],
+                    $avaliacao->mensagens_finalizacao ?? []
+                ),
+                'Finalizacoes automaticas da avaliacao processadas com sucesso.'
+            );
+        } catch (ModelNotFoundException $e) {
+            return $this->errorResponse('Avaliacao N3 nao encontrada.', 404);
+        } catch (\Throwable $e) {
+            Log::error('Erro ao reprocessar finalizacoes automaticas da avaliacao N3', [
+                'id' => $id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $this->errorResponse('Erro ao reprocessar finalizacoes automaticas.', 500);
+        }
+    }
+
+    private function processarFinalizacoesAutomaticas(
+        int $idOs,
+        int $idChecklist,
+        int $idAssuntoIxc,
+        int|string|null $idColaboradorIxc = null,
+        array $respostas = [],
+        array $mensagensFinalizacao = []
+    ): array
+    {
+        try {
+            $config = IxcConfig::where('ativo', true)->first();
+
+            if (!$config) {
+                return [
+                    'fechamentos' => [],
+                    'ignorado' => true,
+                    'motivo' => 'Nenhuma configuracao IXC ativa encontrada.',
+                ];
+            }
+
+            $resultadoOrdem = $this->ixcService->buscarOrdemServicoPorId($config, $idOs);
+
+            if (!$resultadoOrdem['success']) {
+                return [
+                    'fechamentos' => [],
+                    'ignorado' => true,
+                    'motivo' => 'Nao foi possivel consultar a ordem no IXC.',
+                ];
+            }
+
+            $ordem = $this->ixcService->extrairRegistrosResposta($resultadoOrdem['data'])[0] ?? null;
+
+            if (!$ordem) {
+                return [
+                    'fechamentos' => [],
+                    'ignorado' => true,
+                    'motivo' => 'Ordem de servico nao encontrada no IXC.',
+                ];
+            }
+
+            return $this->finalizacaoAutomaticaService->processarOrdemAvaliada(
+                $config,
+                $ordem,
+                $idChecklist,
+                $idAssuntoIxc,
+                $idColaboradorIxc,
+                $respostas,
+                $mensagensFinalizacao
+            );
+        } catch (\Throwable $e) {
+            Log::error('Erro ao processar finalizacoes automaticas apos avaliacao N3', [
+                'id_os' => $idOs,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'fechamentos' => [],
+                'ignorado' => true,
+                'motivo' => 'Erro ao processar finalizacoes automaticas no IXC.',
+            ];
         }
     }
 }

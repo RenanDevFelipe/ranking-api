@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\ChecklistItemController;
 use App\Http\Controllers\Api\V1\ColaboradorController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\IxcConfigController;
+use App\Http\Controllers\Api\V1\IxcFinalizacaoConfigController;
 use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SetorController;
 use App\Http\Controllers\Api\V1\UserController;
@@ -40,6 +41,7 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('roles', RoleController::class);
         Route::apiResource('colaborators', ColaboradorController::class);
         Route::apiResource('ixc-configs', IxcConfigController::class);
+        Route::apiResource('ixc-finalizacao-configs', IxcFinalizacaoConfigController::class);
 
         Route::prefix('ixc')
             ->group(function () {
@@ -51,11 +53,13 @@ Route::prefix('v1')->group(function () {
                 ]);
 
                 Route::get('/ordens-servico/{id}', [IxcController::class, 'ordemServico']);
+                Route::post('/ordens-servico/fechar', [IxcController::class, 'fecharOrdemServico']);
 
                 Route::get('/testar-conexao', [IxcController::class, 'testarConexao']);
             });
 
         Route::apiResource('avaliacoes-n3', AvaliacaoN3Controller::class);
+        Route::post('avaliacoes-n3/{id}/processar-finalizacoes', [AvaliacaoN3Controller::class, 'reprocessarFinalizacoesAutomaticas']);
         Route::get('avaliacoes-n3/verificar-os/{idOs}', [AvaliacaoN3Controller::class, 'verificarOsAvaliada']);
 
         Route::apiResource('checklists', ChecklistController::class);

@@ -7,6 +7,7 @@ use App\Models\ChecklistAssunto;
 use App\Models\Colaborador;
 use App\Models\IxcConfig;
 use App\Models\ProducaoOs;
+use App\Services\IxcFinalizacaoAutomaticaService;
 use App\Services\IxcService;
 use App\Traits\ApiResponseTrait;
 use Illuminate\Http\Request;
@@ -17,7 +18,8 @@ class ProducaoOsSyncController extends Controller
     use ApiResponseTrait;
 
     public function __construct(
-        protected IxcService $ixcService
+        protected IxcService $ixcService,
+        protected IxcFinalizacaoAutomaticaService $finalizacaoAutomaticaService
     ) {}
 
     public function sync(Request $request)
@@ -44,6 +46,7 @@ class ProducaoOsSyncController extends Controller
                 ->get();
 
             $totalSincronizadas = 0;
+            $totalFinalizacoesAutomaticas = 0;
 
             foreach ($colaboradores as $colaborador) {
                 $result = $this->ixcService->listarOrdensServicoFinalizadasPorTecnicoFormatadas(
@@ -63,6 +66,10 @@ class ProducaoOsSyncController extends Controller
                 $ordens = collect($result['data']['registros'] ?? []);
 
                 foreach ($ordens as $os) {
+                    $processamento = $this->finalizacaoAutomaticaService
+                        ->processarPorOrdemFinalizada($configIxc, $os);
+                    $totalFinalizacoesAutomaticas += count($processamento['fechamentos']);
+
                     $idAssuntoIxc = $os['assunto']['id'] ?? null;
 
                     $assunto = ChecklistAssunto::where('id_assunto_ixc', $idAssuntoIxc)
@@ -95,6 +102,7 @@ class ProducaoOsSyncController extends Controller
 
             return $this->successResponse([
                 'total_sincronizadas' => $totalSincronizadas,
+                'total_finalizacoes_automaticas' => $totalFinalizacoesAutomaticas,
             ], 'Produção sincronizada com sucesso.');
 
         } catch (\Throwable $e) {

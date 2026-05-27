@@ -10,25 +10,25 @@ use Throwable;
 
 class IxcService
 {
-    private function client(IxcConfig $config): PendingRequest
+    private function client(IxcConfig $config, string $ixcsoft = 'listar'): PendingRequest
     {
         $base64Token = base64_encode($config->token);
         return Http::withHeaders([
             'Authorization' => 'Basic ' . $base64Token,
             'Content-Type' => 'application/json',
             'Accept' => 'application/json',
-            'ixcsoft' => 'listar',
+            'ixcsoft' => $ixcsoft,
         ])
         ->timeout(280)
         ->retry(2, 500);
     }
 
-    private function consultar(IxcConfig $config, string $endpoint, array $payload): array
+    private function consultar(IxcConfig $config, string $endpoint, array $payload, string $ixcsoft = 'listar'): array
     {
         try {
             $baseUrl = rtrim($config->base_url, '/');
 
-            $response = $this->client($config)
+            $response = $this->client($config, $ixcsoft)
                 ->post($baseUrl . '/' . ltrim($endpoint, '/'), $payload);
 
             if ($response->failed()) {
@@ -97,6 +97,156 @@ class IxcService
         ];
 
         return $this->consultar($config, 'su_oss_chamado', $payload);
+    }
+
+    public function listarOrdensServicoAbertasPorAtendimento(
+        IxcConfig $config,
+        int|string $idAtendimento,
+        string $campoAtendimento = 'id_atendimento'
+    ): array {
+        $camposPermitidos = [
+            'id_atendimento',
+            'id_ticket',
+            'id_su_oss_atendimento',
+        ];
+        $campoAtendimento = in_array($campoAtendimento, $camposPermitidos, true)
+            ? $campoAtendimento
+            : 'id_atendimento';
+        $campoIxc = 'su_oss_chamado.' . $campoAtendimento;
+
+        $payload = [
+            'qtype' => $campoIxc,
+            'query' => $idAtendimento,
+            'oper' => '=',
+            'page' => '1',
+            'rp' => '100',
+            'sortname' => 'su_oss_chamado.id',
+            'sortorder' => 'asc',
+            'grid_param' => json_encode([
+                [
+                    'TB' => $campoIxc,
+                    'OP' => '=',
+                    'P' => $idAtendimento,
+                ],
+                [
+                    'TB' => 'su_oss_chamado.status',
+                    'OP' => '=',
+                    'P' => 'A',
+                ],
+            ], JSON_UNESCAPED_UNICODE),
+        ];
+
+        return $this->consultar($config, 'su_oss_chamado', $payload);
+    }
+
+    private function preencherTemplatePayload(array $payload, array $context): array
+    {
+        return collect($payload)->mapWithKeys(function ($value, $key) use ($context) {
+            if (is_array($value)) {
+                return [$key => $this->preencherTemplatePayload($value, $context)];
+            }
+
+            if (!is_string($value)) {
+                return [$key => $value];
+            }
+
+            return [$key => preg_replace_callback('/\{(\w+)\}/', function ($matches) use ($context) {
+                return (string) ($context[$matches[1]] ?? '');
+            }, $value)];
+        })->toArray();
+    }
+
+    public function fecharOrdemServico(
+        IxcConfig $config,
+        int|string $idTicket,
+        array $context = [],
+        array $payloadTemplate = []
+    ): array {
+        $defaultPayload = [
+            'id_chamado' => '{id_os}',
+            'id_tarefa_atual' => '',
+            'eh_tarefa_decisao' => '',
+            'sequencia_atual' => '',
+            'proxima_sequencia_forcada' => '',
+            'finaliza_processo_aux' => '',
+            'gera_comissao_aux' => '',
+            'id_processo' => '',
+            'data_inicio' => '{data_inicio}',
+            'data_final' => '{data_final}',
+            'id_resposta' => '',
+            'mensagem' => '',
+            'id_tecnico' => '{id_tecnico}',
+            'id_equipe' => '{id_equipe}',
+            'gera_comissao' => '',
+            'status' => 'F',
+            'data' => '{data}',
+            'id_evento' => '',
+            'id_su_diagnostico' => '',
+            'justificativa_sla_atrasado' => '',
+            'id_evento_status' => '',
+            'id_proxima_tarefa' => '',
+            'id_proxima_tarefa_aux' => '',
+            'latitude' => '',
+            'longitude' => '',
+            'gps_time' => '',
+        ];
+
+        $context = array_merge([
+            'id_os' => $idTicket,
+            'id_chamado' => $idTicket,
+            'id_tecnico' => $context['id_tecnico'] ?? '',
+            'id_equipe' => $context['id_equipe'] ?? '',
+            'data' => $context['data'] ?? $context['data_final'] ?? $context['data_finalizacao'] ?? now()->format('Y-m-d H:i:s'),
+            'data_final' => $context['data_final'] ?? $context['data_finalizacao'] ?? now()->format('Y-m-d H:i:s'),
+            'data_inicio' => $context['data_inicio'] ?? $context['data'] ?? now()->format('Y-m-d H:i:s'),
+        ], $context);
+
+        $payload = $this->preencherTemplatePayload(
+            array_replace_recursive($defaultPayload, $payloadTemplate),
+            $context
+        );
+
+        $resultadoFechamento = $this->consultar($config, 'su_oss_chamado_fechar', $payload, 'alterar');
+
+        if (!$resultadoFechamento['success']) {
+            $resultadoFechamento['data'] = [
+                'retorno_fechamento' => $resultadoFechamento['data'],
+                'payload_enviado' => $payload,
+            ];
+
+            return $resultadoFechamento;
+        }
+
+        $resultadoConfirmacao = $this->buscarOrdemServicoPorId($config, $idTicket);
+        $ordemConfirmada = $resultadoConfirmacao['success']
+            ? $this->primeiroRegistro($resultadoConfirmacao['data'])
+            : null;
+        $statusConfirmado = strtoupper((string) ($ordemConfirmada['status'] ?? ''));
+        $finalizada = $statusConfirmado === 'F';
+
+        if (!$finalizada) {
+            Log::warning('IXC respondeu ao fechamento, mas a OS nao foi confirmada como finalizada', [
+                'config_id' => $config->id,
+                'id_os' => $idTicket,
+                'status_confirmado' => $statusConfirmado ?: null,
+                'retorno_fechamento' => $resultadoFechamento['data'],
+                'payload_enviado' => $payload,
+            ]);
+        }
+
+        return [
+            'success' => $finalizada,
+            'message' => $finalizada
+                ? 'Ordem de servico finalizada e confirmada no IXC.'
+                : 'O IXC respondeu ao fechamento, mas a ordem de servico nao foi confirmada com status finalizada.',
+            'status' => $finalizada ? 200 : 422,
+            'data' => [
+                'status_confirmado' => $statusConfirmado ?: null,
+                'ordem_confirmada' => $ordemConfirmada,
+                'retorno_fechamento' => $resultadoFechamento['data'],
+                'payload_enviado' => $payload,
+            ],
+        ];
     }
 
     public function listarArquivosPorTicket(
@@ -348,6 +498,11 @@ class IxcService
         }
 
         return [];
+    }
+
+    public function extrairRegistrosResposta(?array $data): array
+    {
+        return $this->extrairRegistros($data);
     }
 
     private function primeiroRegistro(?array $data): ?array

@@ -26,4 +26,9 @@ class ChecklistAssunto extends Model
     {
         return $this->hasOne(PontuacaoAssunto::class, 'id_checklist_assunto', 'id');
     }
+
+    public function finalizacaoIxc()
+    {
+        return $this->hasMany(IxcFinalizacaoConfig::class, 'id_checklist_assunto', 'id');
+    }
 }

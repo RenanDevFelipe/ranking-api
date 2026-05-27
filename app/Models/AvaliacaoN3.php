@@ -24,10 +24,12 @@ class AvaliacaoN3 extends Model
         'id_setor',
         'avaliador',
         'check_list',
+        'mensagens_finalizacao',
     ];
 
     protected $casts = [
         'check_list' => 'array',
+        'mensagens_finalizacao' => 'array',
         'data_finalizacao_os' => 'datetime',
         'data_finalizacao' => 'date',
     ];

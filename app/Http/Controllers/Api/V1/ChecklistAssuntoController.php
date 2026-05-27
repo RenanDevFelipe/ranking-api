@@ -17,7 +17,7 @@ class ChecklistAssuntoController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = ChecklistAssunto::with('checklist');
+            $query = ChecklistAssunto::with(['checklist', 'finalizacaoIxc']);
 
             if ($request->filled('id_checklist')) {
                 $query->where('id_checklist', $request->id_checklist);
@@ -71,7 +71,7 @@ class ChecklistAssuntoController extends Controller
             $assunto = ChecklistAssunto::create($data);
 
             return $this->successResponse(
-                $assunto->load('checklist'),
+                $assunto->load(['checklist', 'finalizacaoIxc']),
                 'Assunto vinculado ao checklist com sucesso.',
                 201
             );
@@ -91,7 +91,7 @@ class ChecklistAssuntoController extends Controller
     public function show(string $id)
     {
         try {
-            $assunto = ChecklistAssunto::with('checklist')->findOrFail($id);
+            $assunto = ChecklistAssunto::with(['checklist', 'finalizacaoIxc'])->findOrFail($id);
 
             return $this->successResponse(
                 $assunto,
@@ -142,7 +142,7 @@ class ChecklistAssuntoController extends Controller
             $assunto->update($data);
 
             return $this->successResponse(
-                $assunto->load('checklist'),
+                $assunto->load(['checklist', 'finalizacaoIxc']),
                 'Vínculo de assunto atualizado com sucesso.'
             );
         } catch (ModelNotFoundException $e) {
@@ -196,7 +196,8 @@ class ChecklistAssuntoController extends Controller
     {
         try {
             $assunto = ChecklistAssunto::with([
-                    'checklist.itens' => fn ($query) => $query->orderBy('ordem')
+                    'checklist.itens' => fn ($query) => $query->orderBy('ordem'),
+                    'finalizacaoIxc',
                 ])
                 ->where('id_assunto_ixc', $idAssuntoIxc)
                 ->first();
