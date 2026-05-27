@@ -31,6 +31,7 @@ class RankingController extends Controller
                 ->when(!empty($data['id_colaborador']), function ($query) use ($data) {
                     $query->where('id_colaborador', $data['id_colaborador']);
                 })
+                ->where('setor_colaborador', 22)
                 ->whereNotNull('id_ixc')
                 ->orderBy('nome_colaborador')
                 ->get();
@@ -116,6 +117,7 @@ class RankingController extends Controller
                 ->when(!empty($data['id_colaborador']), function ($query) use ($data) {
                     $query->where('id_colaborador', $data['id_colaborador']);
                 })
+                ->where('setor_colaborador', 22)
                 ->whereNotNull('id_ixc')
                 ->orderBy('nome_colaborador')
                 ->get();
@@ -255,6 +257,7 @@ class RankingController extends Controller
                 ->when(!empty($data['id_colaborador']), function ($query) use ($data) {
                     $query->where('id_colaborador', $data['id_colaborador']);
                 })
+                ->where('setor_colaborador', 22)
                 ->whereNotNull('id_ixc')
                 ->orderBy('nome_colaborador')
                 ->get();
