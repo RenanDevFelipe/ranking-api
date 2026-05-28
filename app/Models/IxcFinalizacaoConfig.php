@@ -21,6 +21,10 @@ class IxcFinalizacaoConfig extends Model
         'payload',
     ];
 
+    protected $appends = [
+        'id_checklist_assuntos',
+    ];
+
     protected $casts = [
         'ativo' => 'boolean',
         'resposta_condicao' => 'array',
@@ -41,8 +45,27 @@ class IxcFinalizacaoConfig extends Model
         return $this->belongsTo(ChecklistAssunto::class, 'id_checklist_assunto', 'id');
     }
 
+    public function assuntos()
+    {
+        return $this->belongsToMany(
+            ChecklistAssunto::class,
+            'ixc_finalizacao_config_assuntos',
+            'id_ixc_finalizacao_config',
+            'id_checklist_assunto'
+        )->withTimestamps();
+    }
+
     public function itemCondicao()
     {
         return $this->belongsTo(ChecklistItem::class, 'id_item_condicao', 'id_item');
+    }
+
+    public function getIdChecklistAssuntosAttribute(): array
+    {
+        if (!$this->relationLoaded('assuntos')) {
+            return [];
+        }
+
+        return $this->assuntos->pluck('id')->values()->all();
     }
 }

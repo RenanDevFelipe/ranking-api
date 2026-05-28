@@ -128,7 +128,7 @@ class IxcFinalizacaoAutomaticaService
             'campo_atendimento' => $atendimento['campo_retorno'] ?? null,
             'id_os' => $idOs,
             'id_assunto_ixc' => $idAssuntoIxc,
-            'id_checklist_assunto' => $configFinalizacao->id_checklist_assunto,
+            'id_checklist_assunto' => $this->idAssuntoExecucao($configFinalizacao),
             'config_id' => $configFinalizacao->id,
             'id_item_condicao' => $configFinalizacao->id_item_condicao,
             'resposta_condicao' => $configFinalizacao->resposta_condicao,
@@ -296,7 +296,7 @@ class IxcFinalizacaoAutomaticaService
                     'campo_atendimento' => $atendimento['campo_retorno'],
                     'id_os' => $idOs,
                     'id_assunto_ixc' => $idAssunto,
-                    'id_checklist_assunto' => $configFinalizacao->id_checklist_assunto,
+                    'id_checklist_assunto' => $this->idAssuntoExecucao($configFinalizacao),
                     'config_id' => $configFinalizacao->id,
                     'id_item_condicao' => $configFinalizacao->id_item_condicao,
                     'resposta_condicao' => $configFinalizacao->resposta_condicao,
@@ -333,7 +333,8 @@ class IxcFinalizacaoAutomaticaService
         int $idAssuntoIxc,
         array $respostas
     ): ?IxcFinalizacaoConfig {
-        $configs = IxcFinalizacaoConfig::whereHas('assunto', function ($query) use ($idChecklist, $idAssuntoIxc) {
+        $configs = IxcFinalizacaoConfig::with('assuntos')
+            ->whereHas('assuntos', function ($query) use ($idChecklist, $idAssuntoIxc) {
                 $query->where('id_assunto_ixc', $idAssuntoIxc);
 
                 if ($idChecklist) {
@@ -342,6 +343,21 @@ class IxcFinalizacaoAutomaticaService
             })
             ->where('ativo', true)
             ->get();
+
+        $configs->each(function (IxcFinalizacaoConfig $config) use ($idChecklist, $idAssuntoIxc) {
+            $assunto = $config->assuntos->first(function ($assunto) use ($idChecklist, $idAssuntoIxc) {
+                if ((int) $assunto->id_assunto_ixc !== $idAssuntoIxc) {
+                    return false;
+                }
+
+                return !$idChecklist || (int) $assunto->id_checklist === $idChecklist;
+            });
+
+            if ($assunto) {
+                $config->setAttribute('id_checklist_assunto_execucao', $assunto->id);
+                $config->setRelation('assuntoExecucao', $assunto);
+            }
+        });
 
         foreach ($configs->whereNotNull('id_item_condicao') as $config) {
             $resposta = collect($respostas)->first(
@@ -382,8 +398,9 @@ class IxcFinalizacaoAutomaticaService
         $payload = $config->payloadFechamento();
 
         if ($config->origem_mensagem === 'usuario') {
+            $idChecklistAssunto = $this->idAssuntoExecucao($config);
             $mensagem = collect($mensagensFinalizacao)->first(
-                fn (array $item) => (int) ($item['id_checklist_assunto'] ?? 0) === (int) $config->id_checklist_assunto
+                fn (array $item) => (int) ($item['id_checklist_assunto'] ?? 0) === (int) $idChecklistAssunto
             )['mensagem'] ?? null;
 
             return $mensagem ? array_replace($payload, ['mensagem' => $mensagem]) : null;
@@ -403,7 +420,9 @@ class IxcFinalizacaoAutomaticaService
         IxcFinalizacaoConfig $config,
         array $respostas
     ): string {
-        $idChecklist ??= $config->assunto()->value('id_checklist');
+        $idChecklist ??= $config->relationLoaded('assuntoExecucao')
+            ? $config->getRelation('assuntoExecucao')?->id_checklist
+            : $config->assuntos()->value('id_checklist');
         $checklist = $idChecklist ? Checklist::find($idChecklist) : null;
         $itens = $idChecklist
             ? ChecklistItem::where('id_checklist', $idChecklist)->get()->keyBy('id_item')
@@ -423,6 +442,12 @@ class IxcFinalizacaoAutomaticaService
         })->implode("\n");
 
         return trim("Checklist: " . ($checklist?->nome_checklist ?? 'Avaliacao') . "\n" . $linhas);
+    }
+
+    private function idAssuntoExecucao(IxcFinalizacaoConfig $config): ?int
+    {
+        return $config->getAttribute('id_checklist_assunto_execucao')
+            ?? $config->id_checklist_assunto;
     }
 
     private function identificarAtendimento(array $ordem): ?array

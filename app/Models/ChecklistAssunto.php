@@ -29,6 +29,11 @@ class ChecklistAssunto extends Model
 
     public function finalizacaoIxc()
     {
-        return $this->hasMany(IxcFinalizacaoConfig::class, 'id_checklist_assunto', 'id');
+        return $this->belongsToMany(
+            IxcFinalizacaoConfig::class,
+            'ixc_finalizacao_config_assuntos',
+            'id_checklist_assunto',
+            'id_ixc_finalizacao_config'
+        )->withTimestamps();
     }
 }

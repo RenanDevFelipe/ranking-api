@@ -20,7 +20,7 @@ class IxcFinalizacaoConfigController extends Controller
     public function index()
     {
         return $this->successResponse(
-            IxcFinalizacaoConfig::with(['assunto.checklist', 'itemCondicao'])->orderBy('nome_assunto_ixc')->get(),
+            IxcFinalizacaoConfig::with(['assuntos.checklist', 'itemCondicao'])->orderBy('id')->get(),
             'Configuracoes de finalizacao IXC listadas com sucesso.'
         );
     }
@@ -29,19 +29,21 @@ class IxcFinalizacaoConfigController extends Controller
     {
         try {
             $data = $request->validate($this->rules());
-            $assunto = ChecklistAssunto::findOrFail($data['id_checklist_assunto']);
-            $this->validarItemCondicao($assunto, $data);
+            $assuntos = $this->buscarAssuntosVinculados($data);
+            $this->validarItemCondicao($assuntos, $data);
 
             $config = IxcFinalizacaoConfig::create([
-                ...$data,
-                'id_assunto_ixc' => $assunto->id_assunto_ixc,
-                'nome_assunto_ixc' => $assunto->nome_assunto_ixc,
+                ...collect($data)->except(['id_checklist_assunto', 'id_checklist_assuntos', 'assuntos'])->toArray(),
+                'id_checklist_assunto' => $assuntos->first()->id,
+                'id_assunto_ixc' => $assuntos->first()->id_assunto_ixc,
+                'nome_assunto_ixc' => $assuntos->first()->nome_assunto_ixc,
                 'ativo' => $data['ativo'] ?? true,
                 'finalizar_atendimento' => $data['finalizar_atendimento'] ?? 'N',
             ]);
+            $config->assuntos()->sync($assuntos->pluck('id')->all());
 
             return $this->successResponse(
-                $config->load(['assunto.checklist', 'itemCondicao']),
+                $config->load(['assuntos.checklist', 'itemCondicao']),
                 'Configuracao de finalizacao IXC criada com sucesso.',
                 201
             );
@@ -61,7 +63,7 @@ class IxcFinalizacaoConfigController extends Controller
     {
         try {
             return $this->successResponse(
-                IxcFinalizacaoConfig::with(['assunto.checklist', 'itemCondicao'])->findOrFail($id),
+                IxcFinalizacaoConfig::with(['assuntos.checklist', 'itemCondicao'])->findOrFail($id),
                 'Configuracao de finalizacao IXC encontrada com sucesso.'
             );
         } catch (ModelNotFoundException $e) {
@@ -75,18 +77,29 @@ class IxcFinalizacaoConfigController extends Controller
             $config = IxcFinalizacaoConfig::findOrFail($id);
             $data = $request->validate($this->rules($config->id, false));
 
-            $idChecklistAssunto = $data['id_checklist_assunto'] ?? $config->id_checklist_assunto;
-            if ($idChecklistAssunto) {
-                $assunto = ChecklistAssunto::findOrFail($idChecklistAssunto);
-                $this->validarItemCondicao($assunto, $data, $config);
-                $data['id_assunto_ixc'] = $assunto->id_assunto_ixc;
-                $data['nome_assunto_ixc'] = $assunto->nome_assunto_ixc;
+            $assuntos = null;
+            if (
+                array_key_exists('id_checklist_assuntos', $data)
+                || array_key_exists('id_checklist_assunto', $data)
+                || array_key_exists('assuntos', $data)
+            ) {
+                $assuntos = $this->buscarAssuntosVinculados($data);
+                $this->validarItemCondicao($assuntos, $data, $config);
+                $data['id_checklist_assunto'] = $assuntos->first()->id;
+                $data['id_assunto_ixc'] = $assuntos->first()->id_assunto_ixc;
+                $data['nome_assunto_ixc'] = $assuntos->first()->nome_assunto_ixc;
+            } else {
+                $this->validarItemCondicao($config->assuntos()->get(), $data, $config);
             }
 
-            $config->update($data);
+            $config->update(collect($data)->except(['id_checklist_assuntos', 'assuntos'])->toArray());
+
+            if ($assuntos) {
+                $config->assuntos()->sync($assuntos->pluck('id')->all());
+            }
 
             return $this->successResponse(
-                $config->fresh()->load(['assunto.checklist', 'itemCondicao']),
+                $config->fresh()->load(['assuntos.checklist', 'itemCondicao']),
                 'Configuracao de finalizacao IXC atualizada com sucesso.'
             );
         } catch (ModelNotFoundException $e) {
@@ -121,10 +134,16 @@ class IxcFinalizacaoConfigController extends Controller
 
         return [
             'id_checklist_assunto' => [
-                $presence,
+                'sometimes',
                 'integer',
                 'exists:checklist_assuntos,id',
             ],
+            'id_checklist_assuntos' => ['sometimes', 'array', 'min:1'],
+            'id_checklist_assuntos.*' => ['integer', 'exists:checklist_assuntos,id'],
+            'assuntos' => ['sometimes', 'array', 'min:1'],
+            'assuntos.*.id_checklist' => ['required_with:assuntos', 'integer', 'exists:checklists,id_checklist'],
+            'assuntos.*.id_assunto_ixc' => ['required_with:assuntos', 'integer'],
+            'assuntos.*.nome_assunto_ixc' => ['required_with:assuntos', 'string', 'max:255'],
             'id_item_condicao' => ['sometimes', 'nullable', 'integer', 'exists:checklist_itens,id_item'],
             'resposta_condicao' => ['sometimes', 'nullable'],
             'ativo' => ['sometimes', 'boolean'],
@@ -136,7 +155,7 @@ class IxcFinalizacaoConfigController extends Controller
     }
 
     private function validarItemCondicao(
-        ChecklistAssunto $assunto,
+        \Illuminate\Support\Collection $assuntos,
         array $data,
         ?IxcFinalizacaoConfig $config = null
     ): void {
@@ -157,8 +176,10 @@ class IxcFinalizacaoConfigController extends Controller
             ]);
         }
 
+        $checklists = $assuntos->pluck('id_checklist')->unique()->values();
+
         $pertenceChecklist = ChecklistItem::where('id_item', $idItem)
-            ->where('id_checklist', $assunto->id_checklist)
+            ->whereIn('id_checklist', $checklists)
             ->exists();
 
         if (!$pertenceChecklist) {
@@ -166,5 +187,33 @@ class IxcFinalizacaoConfigController extends Controller
                 'id_item_condicao' => 'O item de condicao deve pertencer ao checklist do assunto.',
             ]);
         }
+    }
+
+    private function buscarAssuntosVinculados(array $data): \Illuminate\Support\Collection
+    {
+        if (!empty($data['assuntos'])) {
+            return collect($data['assuntos'])->map(function (array $assunto) {
+                return ChecklistAssunto::updateOrCreate(
+                    [
+                        'id_checklist' => $assunto['id_checklist'],
+                        'id_assunto_ixc' => $assunto['id_assunto_ixc'],
+                    ],
+                    [
+                        'nome_assunto_ixc' => $assunto['nome_assunto_ixc'],
+                    ]
+                );
+            });
+        }
+
+        $ids = $data['id_checklist_assuntos'] ?? [$data['id_checklist_assunto'] ?? null];
+        $ids = collect($ids)->filter()->unique()->values();
+
+        if ($ids->isEmpty()) {
+            throw ValidationException::withMessages([
+                'id_checklist_assuntos' => 'Informe ao menos um assunto para vincular a configuracao.',
+            ]);
+        }
+
+        return ChecklistAssunto::whereIn('id', $ids)->get();
     }
 }

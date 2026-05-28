@@ -148,7 +148,9 @@ class IxcController extends Controller
                 return $this->errorResponse('Nenhuma configuração IXC ativa encontrada.', 404);
             }
 
-            $finalizacaoConfig = IxcFinalizacaoConfig::where('id_checklist_assunto', $data['id_checklist_assunto'])
+            $finalizacaoConfig = IxcFinalizacaoConfig::whereHas('assuntos', function ($query) use ($data) {
+                    $query->where('checklist_assuntos.id', $data['id_checklist_assunto']);
+                })
                 ->where('ativo', true)
                 ->when(
                     isset($data['id_config_finalizacao']),
