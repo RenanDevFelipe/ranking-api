@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Log;
 class IxcFinalizacaoAutomaticaService
 {
     private const MAX_ITERACOES = 10;
+    private const MAX_RECONSULTAS_SEM_CANDIDATAS = 3;
+    private const INTERVALO_RECONSULTA_MICROSSEGUNDOS = 800000;
 
     public function __construct(
         protected IxcService $ixcService
@@ -193,6 +195,8 @@ class IxcFinalizacaoAutomaticaService
 
         $fechamentos = [];
         $ordensProcessadas = array_fill_keys(array_map('strval', $ordensIgnoradas), true);
+        $reconsultasSemCandidatas = 0;
+        $motivoParada = null;
 
         for ($iteracao = 0; $iteracao < self::MAX_ITERACOES; $iteracao++) {
             $resultadoAbertas = $this->ixcService->listarOrdensServicoAbertasPorAtendimento(
@@ -211,7 +215,10 @@ class IxcFinalizacaoAutomaticaService
                 break;
             }
 
-            $candidatas = collect($this->ixcService->extrairRegistrosResposta($resultadoAbertas['data']))
+            $ordensAbertas = collect($this->ixcService->extrairRegistrosResposta($resultadoAbertas['data']));
+            $ordensSemConfiguracao = [];
+
+            $candidatas = $ordensAbertas
                 ->map(function (array $osAberta) use ($idChecklist, $respostas, $ordensProcessadas) {
                 $idOs = $osAberta['id'] ?? null;
                 $idAssunto = $osAberta['id_assunto'] ?? null;
@@ -248,8 +255,50 @@ class IxcFinalizacaoAutomaticaService
                 ->values();
 
             if ($candidatas->isEmpty()) {
+                $ordensSemConfiguracao = $ordensAbertas
+                    ->filter(fn (array $osAberta) => !isset($ordensProcessadas[(string) ($osAberta['id'] ?? '')]))
+                    ->map(fn (array $osAberta) => [
+                        'id_os' => $osAberta['id'] ?? null,
+                        'id_assunto_ixc' => $osAberta['id_assunto'] ?? null,
+                        'status' => $osAberta['status'] ?? null,
+                    ])
+                    ->values()
+                    ->all();
+
+                if (!empty($ordensSemConfiguracao)) {
+                    return [
+                        'id_atendimento' => $idAtendimento,
+                        'campo_atendimento' => $atendimento['campo_retorno'],
+                        'fechamentos' => [],
+                        'ignorado' => false,
+                        'motivo' => 'Existem ordens abertas no atendimento, mas nenhuma possui configuracao ativa vinculada ao checklist/assunto IXC.',
+                        'ordens_abertas_sem_configuracao' => $ordensSemConfiguracao,
+                        'id_checklist' => $idChecklist,
+                    ];
+                }
+
+                if ($iteracao === 0) {
+                    return [
+                        'id_atendimento' => $idAtendimento,
+                        'campo_atendimento' => $atendimento['campo_retorno'],
+                        'fechamentos' => [],
+                        'ignorado' => false,
+                        'motivo' => 'Nenhuma ordem aberta foi encontrada no atendimento para finalizar automaticamente.',
+                        'id_checklist' => $idChecklist,
+                    ];
+                }
+
+                if ($reconsultasSemCandidatas < self::MAX_RECONSULTAS_SEM_CANDIDATAS) {
+                    $reconsultasSemCandidatas++;
+                    usleep(self::INTERVALO_RECONSULTA_MICROSSEGUNDOS);
+                    continue;
+                }
+
+                $motivoParada = 'Nenhuma nova ordem aberta configurada apareceu no atendimento apos a ultima finalizacao.';
                 break;
             }
+
+            $reconsultasSemCandidatas = 0;
 
             $osAberta = $candidatas->first()['os'];
             $configFinalizacao = $candidatas->first()['config'];
@@ -318,14 +367,22 @@ class IxcFinalizacaoAutomaticaService
                     'ignorado' => false,
                 ];
             }
+
+            usleep(self::INTERVALO_RECONSULTA_MICROSSEGUNDOS);
         }
 
-        return [
+        $resultado = [
             'id_atendimento' => $idAtendimento,
             'campo_atendimento' => $atendimento['campo_retorno'],
             'fechamentos' => $fechamentos,
             'ignorado' => false,
         ];
+
+        if ($motivoParada) {
+            $resultado['motivo_parada'] = $motivoParada;
+        }
+
+        return $resultado;
     }
 
     private function buscarConfiguracao(
@@ -334,9 +391,8 @@ class IxcFinalizacaoAutomaticaService
         array $respostas
     ): ?IxcFinalizacaoConfig {
         $configs = IxcFinalizacaoConfig::with('assuntos')
-            ->whereHas('assuntos', function ($query) use ($idChecklist, $idAssuntoIxc) {
-                $query->where('id_assunto_ixc', $idAssuntoIxc);
-
+            ->where('id_assunto_ixc', $idAssuntoIxc)
+            ->whereHas('assuntos', function ($query) use ($idChecklist) {
                 if ($idChecklist) {
                     $query->where('id_checklist', $idChecklist);
                 }
@@ -344,12 +400,8 @@ class IxcFinalizacaoAutomaticaService
             ->where('ativo', true)
             ->get();
 
-        $configs->each(function (IxcFinalizacaoConfig $config) use ($idChecklist, $idAssuntoIxc) {
-            $assunto = $config->assuntos->first(function ($assunto) use ($idChecklist, $idAssuntoIxc) {
-                if ((int) $assunto->id_assunto_ixc !== $idAssuntoIxc) {
-                    return false;
-                }
-
+        $configs->each(function (IxcFinalizacaoConfig $config) use ($idChecklist) {
+            $assunto = $config->assuntos->first(function ($assunto) use ($idChecklist) {
                 return !$idChecklist || (int) $assunto->id_checklist === $idChecklist;
             });
 

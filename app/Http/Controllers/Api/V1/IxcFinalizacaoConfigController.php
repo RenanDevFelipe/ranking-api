@@ -35,8 +35,8 @@ class IxcFinalizacaoConfigController extends Controller
             $config = IxcFinalizacaoConfig::create([
                 ...collect($data)->except(['id_checklist_assunto', 'id_checklist_assuntos', 'assuntos'])->toArray(),
                 'id_checklist_assunto' => $assuntos->first()->id,
-                'id_assunto_ixc' => $assuntos->first()->id_assunto_ixc,
-                'nome_assunto_ixc' => $assuntos->first()->nome_assunto_ixc,
+                'id_assunto_ixc' => $this->primeiroAssuntoIxcInformado($data, $assuntos->first()->id_assunto_ixc),
+                'nome_assunto_ixc' => $this->primeiroNomeAssuntoInformado($data, $assuntos->first()->nome_assunto_ixc),
                 'ativo' => $data['ativo'] ?? true,
                 'finalizar_atendimento' => $data['finalizar_atendimento'] ?? 'N',
             ]);
@@ -86,8 +86,8 @@ class IxcFinalizacaoConfigController extends Controller
                 $assuntos = $this->buscarAssuntosVinculados($data);
                 $this->validarItemCondicao($assuntos, $data, $config);
                 $data['id_checklist_assunto'] = $assuntos->first()->id;
-                $data['id_assunto_ixc'] = $assuntos->first()->id_assunto_ixc;
-                $data['nome_assunto_ixc'] = $assuntos->first()->nome_assunto_ixc;
+                $data['id_assunto_ixc'] = $this->primeiroAssuntoIxcInformado($data, $assuntos->first()->id_assunto_ixc);
+                $data['nome_assunto_ixc'] = $this->primeiroNomeAssuntoInformado($data, $assuntos->first()->nome_assunto_ixc);
             } else {
                 $this->validarItemCondicao($config->assuntos()->get(), $data, $config);
             }
@@ -141,7 +141,8 @@ class IxcFinalizacaoConfigController extends Controller
             'id_checklist_assuntos' => ['sometimes', 'array', 'min:1'],
             'id_checklist_assuntos.*' => ['integer', 'exists:checklist_assuntos,id'],
             'assuntos' => ['sometimes', 'array', 'min:1'],
-            'assuntos.*.id_checklist' => ['required_with:assuntos', 'integer', 'exists:checklists,id_checklist'],
+            'assuntos.*.id_checklist_assunto' => ['sometimes', 'integer', 'exists:checklist_assuntos,id'],
+            'assuntos.*.id_checklist' => ['sometimes', 'integer', 'exists:checklists,id_checklist'],
             'assuntos.*.id_assunto_ixc' => ['required_with:assuntos', 'integer'],
             'assuntos.*.nome_assunto_ixc' => ['required_with:assuntos', 'string', 'max:255'],
             'id_item_condicao' => ['sometimes', 'nullable', 'integer', 'exists:checklist_itens,id_item'],
@@ -193,6 +194,16 @@ class IxcFinalizacaoConfigController extends Controller
     {
         if (!empty($data['assuntos'])) {
             return collect($data['assuntos'])->map(function (array $assunto) {
+                if (!empty($assunto['id_checklist_assunto'])) {
+                    return ChecklistAssunto::findOrFail($assunto['id_checklist_assunto']);
+                }
+
+                if (empty($assunto['id_checklist'])) {
+                    throw ValidationException::withMessages([
+                        'assuntos' => 'Informe id_checklist ou id_checklist_assunto para cada assunto.',
+                    ]);
+                }
+
                 return ChecklistAssunto::updateOrCreate(
                     [
                         'id_checklist' => $assunto['id_checklist'],
@@ -215,5 +226,15 @@ class IxcFinalizacaoConfigController extends Controller
         }
 
         return ChecklistAssunto::whereIn('id', $ids)->get();
+    }
+
+    private function primeiroAssuntoIxcInformado(array $data, int|string|null $fallback = null): int|string|null
+    {
+        return $data['assuntos'][0]['id_assunto_ixc'] ?? $data['id_assunto_ixc'] ?? $fallback;
+    }
+
+    private function primeiroNomeAssuntoInformado(array $data, ?string $fallback = null): ?string
+    {
+        return $data['assuntos'][0]['nome_assunto_ixc'] ?? $data['nome_assunto_ixc'] ?? $fallback;
     }
 }
